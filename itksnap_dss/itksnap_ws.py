@@ -11,6 +11,8 @@ class WorkspaceWrapper:
         self.registry = Registry()
         self.workspace_file_path = ""
         self.workspace_file_dir = ""
+        self.workspace_saved_dir = ""
+        self.moved = False
         if workspace_file:
             self.load_workspace(workspace_file)
     
@@ -19,13 +21,27 @@ class WorkspaceWrapper:
         self.registry.read_from_xml_file(workspace_file)
         self.workspace_file_path = os.path.abspath(workspace_file)
         self.workspace_file_dir = os.path.dirname(self.workspace_file_path)
+        
+        # Read the location where the file was saved initially
+        self.workspace_saved_dir = self.registry.entry("SaveLocation").get("")
+        
+        # If the locations are different, we will attempt to find relative paths first
+        self.moved = (self.workspace_file_dir != self.workspace_saved_dir)
     
     def save_workspace(self, workspace_file: str):
         """Save workspace to file."""
         self.workspace_file_path = os.path.abspath(workspace_file)
         self.workspace_file_dir = os.path.dirname(self.workspace_file_path)
         self.registry.entry("SaveLocation").set(self.workspace_file_dir)
+        
+        # Update all the paths before saving
+        self.set_all_layer_paths_to_actual_paths()
+        
         self.registry.write_to_xml_file(workspace_file)
+        
+        # Update internal values
+        self.moved = False
+        self.workspace_saved_dir = self.workspace_file_dir
     
     def get_number_of_layers(self) -> int:
         """Count layers by checking for Layers.Layer[%03d] keys in registry."""
@@ -96,6 +112,49 @@ class WorkspaceWrapper:
         
         # Store dimensions in registry
         layer_folder.folder("ProjectMetaData").folder("Files").folder("Grey").entry("Dimensions").set(dims)
+    
+    def get_layer_actual_path(self, folder: Registry|str) -> str:
+        """
+        Find a physical file corresponding to a file referenced by the workspace,
+        accounting for the possibility that the workspace may have been moved or copied.
+        """
+        # Get the filename for the layer
+        if isinstance(folder, str):
+            folder = self.registry.folder(folder)
+            
+        layer_file_full = folder.entry("AbsolutePath").get("")
+        
+        # If the workspace has moved, try finding a relative location
+        if self.moved and self.workspace_saved_dir:
+            relative_path = ""
+            
+            # Test the simple thing: is the saved location included in the file path
+            if layer_file_full.startswith(self.workspace_saved_dir):
+                # Get the balance of the path
+                relative_path = layer_file_full[len(self.workspace_saved_dir):]
+                
+                # Strip the leading slashes
+                relative_path = relative_path.lstrip(os.sep)
+            else:
+                # Fallback: use relative path mechanism
+                relative_path = os.path.relpath(layer_file_full, self.workspace_saved_dir)
+            
+            # Construct the moved file path
+            moved_file_full = os.path.abspath(os.path.join(self.workspace_file_dir, relative_path))
+            
+            # If this file exists, use it
+            if os.path.isfile(moved_file_full):
+                layer_file_full = moved_file_full
+        
+        # Return the file - no guarantee that it exists...
+        return layer_file_full
+    
+    def set_all_layer_paths_to_actual_paths(self):
+        """Convert all layer paths in the workspace to actual paths."""
+        for i in range(self.get_number_of_layers()):
+            folder = self.get_layer_folder(i)
+            actual_path = self.get_layer_actual_path(folder)
+            folder.entry("AbsolutePath").set(actual_path)
     
     def get_number_of_mesh_layers(self) -> int:
         """Count mesh layers by checking for MeshLayers.Layer[%03d] keys."""
