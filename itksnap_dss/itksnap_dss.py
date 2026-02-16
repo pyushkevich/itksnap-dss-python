@@ -115,6 +115,21 @@ class DSSClient:
             self.cli = httpx.Client(verify=False, cookies=r.cookies)
             print(f'Login successful, session id stored in keychain "system", key "{self.key}"')
         return r
+    
+    def login_if_needed(self):
+        """
+        Check if already logged in, and prompt for login if not.
+        
+        Checks if a valid session ID is stored in the keychain. If not, prompts the user
+        to authenticate with the server.
+        
+        Example:
+            >>> client = DSSClient('http://localhost:8080')
+            >>> client.login_if_needed()  # Logs in only if not already authenticated
+        """
+        sess_id = self.cli.cookies.get('webpy_session_id')
+        if sess_id is None:
+            self.login()
 
     def dssp_list_services(self):
         """
