@@ -3,7 +3,9 @@ import os
 import re
 import shutil
 import hashlib
-from typing import List, Set
+import tempfile
+import httpx
+from typing import List, Set, Optional
 from copy import deepcopy
 from .registry import Registry
 
@@ -456,4 +458,93 @@ class WorkspaceWrapper:
         # We'll manually set the save location and write the registry
         export_registry.entry("SaveLocation").set(wsdir)
         export_registry.write_to_xml_file(ws_file_full)
+    
+    def upload_workspace(self, 
+                        server_url: str, 
+                        ticket_id: int, 
+                        wsfile_suffix: str = "",
+                        cookies: Optional[dict] = None):
+        """
+        Upload workspace to DSS server by exporting to temp directory and uploading all files.
+        
+        This method:
+        1. Creates a temporary directory
+        2. Exports the workspace to that directory (with all layer files)
+        3. Uploads all files to the server using multipart form upload
+        4. Cleans up the temporary directory
+        
+        Args:
+            server_url: Base URL of the DSS server (e.g., 'https://dss.itksnap.org')
+            ticket_id: The ticket ID for this upload
+            wsfile_suffix: Optional suffix to add to workspace filename
+            cookies: Optional session cookies dict for authenticated requests
+        
+        Raises:
+            RuntimeError: If upload fails for any file
+        """
+        # Create temporary directory for the export
+        # NOTE: C++ uses GetTempDirName() which creates platform-specific temp directory
+        with tempfile.TemporaryDirectory(prefix='alfabis_') as tempdir:
+            # Export the workspace file to the temporary directory
+            ws_filename = f"ticket_{ticket_id:08d}{wsfile_suffix}.itksnap"
+            ws_filepath = os.path.join(tempdir, ws_filename)
+            
+            # Export workspace with all layers to temp directory
+            self.export_workspace(ws_filepath, scramble_filenames=True)
+            
+            print(f"Exported workspace to {ws_filepath}")
+            
+            # Collect all files in the directory to upload
+            fn_to_upload = []
+            for filename in os.listdir(tempdir):
+                filepath = os.path.join(tempdir, filename)
+                if os.path.isfile(filepath):
+                    fn_to_upload.append(filepath)
+            
+            # Upload each file to the server
+            # NOTE: C++ uses RESTClient::UploadFile which does multipart form upload
+            # The URL format is provided with %d placeholder for ticket_id
+            upload_url_template = server_url.rstrip('/') + '/' + 'api/tickets/%d/files/input'
+            upload_url = upload_url_template % ticket_id
+            
+            # Create httpx client with cookies if provided
+            # NOTE: C++ uses CURL with cookie jar - httpx uses cookie dict
+            client = httpx.Client(cookies=cookies, timeout=300.0) if cookies else httpx.Client(timeout=300.0)
+            
+            try:
+                for fn in fn_to_upload:
+                    fn_name = os.path.basename(fn)
+                    
+                    # NOTE: C++ RESTClient::UploadFile uses curl_formadd with these fields:
+                    # - 'myfile': the actual file content
+                    # - 'filename': the filename
+                    # - 'submit': 'send'
+                    # We replicate this structure with httpx
+                    
+                    with open(fn, 'rb') as f:
+                        files = {
+                            'myfile': (fn_name, f, 'application/octet-stream')
+                        }
+                        data = {
+                            'filename': fn_name,
+                            'submit': 'send'
+                        }
+                        
+                        # Make the upload request
+                        response = client.post(upload_url, files=files, data=data)
+                        
+                        # Check response
+                        if response.status_code != 200:
+                            raise RuntimeError(
+                                f"Failed to upload file {fn_name} "
+                                f"(HTTP {response.status_code}): {response.text}"
+                            )
+                        
+                        # Report upload statistics (similar to C++ GetUploadStatistics)
+                        file_size_mb = os.path.getsize(fn) / 1.0e6
+                        print(f"Uploaded {fn_name} ({file_size_mb:.1f} MB)")
+                
+            finally:
+                client.close()
+
 
