@@ -1,7 +1,10 @@
 import SimpleITK as sitk
 import os
 import re
+import shutil
+import hashlib
 from typing import List, Set
+from copy import deepcopy
 from .registry import Registry
 
 class WorkspaceWrapper:
@@ -369,4 +372,88 @@ class WorkspaceWrapper:
             clear_label.entry("Blue").set(0)
             clear_label.entry("Visible").set(1)
             clear_label.entry("Label").set("Clear Label")
+    
+    def export_workspace(self, new_workspace: str, scramble_filenames: bool = True):
+        """
+        Export the workspace to a new location, copying all layer images.
+        
+        Args:
+            new_workspace: Path to the new workspace file
+            scramble_filenames: If True, use MD5 hash as basename; if False, preserve original names
+        """
+        # NOTE: C++ creates a copy of the workspace object; we'll deep copy the registry
+        # to avoid modifying the original workspace during export
+        export_registry = deepcopy(self.registry)
+        
+        # Convert to absolute path
+        ws_file_full = os.path.abspath(new_workspace)
+        wsdir = os.path.dirname(ws_file_full)
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(wsdir, exist_ok=True)
+        
+        # Get number of layers - we need to count from the export registry
+        n_layers = 0
+        while export_registry.has_folder(f"Layers.Layer[{n_layers:03d}]"):
+            n_layers += 1
+        
+        # Process each layer
+        for i in range(n_layers):
+            # Get the folder corresponding to the layer
+            layer_key = f"Layers.Layer[{i:03d}]"
+            f_layer = export_registry.folder(layer_key)
+            
+            # Get the (possibly moved) absolute filename
+            # NOTE: We need to resolve the actual path using the original workspace's paths
+            fn_layer = f_layer.entry("AbsolutePath").get("")
+            
+            # If workspace has moved, try to find the file relative to current location
+            if self.moved and self.workspace_saved_dir:
+                if fn_layer.startswith(self.workspace_saved_dir):
+                    relative_path = fn_layer[len(self.workspace_saved_dir):].lstrip(os.sep)
+                else:
+                    relative_path = os.path.relpath(fn_layer, self.workspace_saved_dir)
+                
+                moved_file_full = os.path.abspath(os.path.join(self.workspace_file_dir, relative_path))
+                if os.path.isfile(moved_file_full):
+                    fn_layer = moved_file_full
+            
+            # Get the current layer base filename (without extension)
+            fn_layer_basename = os.path.splitext(os.path.basename(fn_layer))[0]
+            
+            # NOTE: C++ has IO hints for reading images in various formats
+            # SimpleITK handles most formats automatically, so we skip the hints
+            
+            # Read the image
+            # NOTE: C++ uses GuidedNativeImageIO which handles multiple formats
+            # SimpleITK ReadImage should handle most medical image formats
+            img = sitk.ReadImage(fn_layer)
+            
+            # Compute hash of image data if scrambling filenames
+            if scramble_filenames:
+                # NOTE: C++ uses io->GetNativeImageMD5Hash() which computes hash of image data
+                # We'll compute MD5 of the pixel data array
+                img_array = sitk.GetArrayFromImage(img)
+                md5_hash = hashlib.md5(img_array.tobytes()).hexdigest()
+                fn_layer_basename = md5_hash
+            
+            # Create new filename with layer index and basename
+            fn_layer_new = os.path.join(wsdir, f"layer_{i:03d}_{fn_layer_basename}.nii.gz")
+            
+            # Save the layer as NIfTI
+            # NOTE: C++ saves as NIFTI without hints - SimpleITK does this automatically
+            sitk.WriteImage(img, fn_layer_new)
+            
+            # Update the layer folder with the new path
+            f_layer.entry("AbsolutePath").set(fn_layer_new)
+            
+            # Clear IO hints (not necessary for NIFTI)
+            if f_layer.has_folder("IOHints"):
+                f_layer.folder("IOHints").clear()
+        
+        # Write the updated workspace file
+        # NOTE: C++ uses SaveAsXMLFile which updates paths and metadata
+        # We'll manually set the save location and write the registry
+        export_registry.entry("SaveLocation").set(wsdir)
+        export_registry.write_to_xml_file(ws_file_full)
 
