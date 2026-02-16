@@ -29,6 +29,7 @@ import pandas as pd
 import keyring
 import getpass
 import time
+import tempfile
 from tqdm.auto import tqdm
 from io import StringIO
 from typing import List, Literal
@@ -445,3 +446,101 @@ class DSSClient:
             r = self.post_(f'api/pro/tickets/{ticket}/attachments', 
                            files={"myfile": f}, data=d)
             return r
+    
+    def dssp_upload_ticket(self, ticket: int, workspace_file: str, wsfile_suffix: str = ""):
+        """
+        Upload a workspace file and all its layer images to the server for a ticket.
+        
+        This method exports the workspace to a temporary directory (converting all layer
+        images to NIfTI format with MD5-hashed filenames), then uploads all files to the
+        server's input area for the specified ticket.
+        
+        Args:
+            ticket (int): Ticket ID to upload files for
+            workspace_file (str): Path to the ITK-SNAP workspace (.itksnap) file
+            wsfile_suffix (str, optional): Optional suffix to add to workspace filename
+                on the server (e.g., "_result" -> "ticket_00000123_result.itksnap")
+        
+        Returns:
+            None
+        
+        Raises:
+            httpx.HTTPStatusError: If any file upload fails
+            FileNotFoundError: If the workspace file doesn't exist
+            RuntimeError: If workspace export fails
+        
+        Example:
+            >>> # Upload results workspace after processing
+            >>> client.dssp_upload_ticket(123, '/tmp/result_workspace.itksnap')
+            Exported workspace to /tmp/alfabis_xyz/ticket_00000123.itksnap
+            Uploaded ticket_00000123.itksnap (0.1 MB)
+            Uploaded layer_000_a3b5c7d9e1f2...nii.gz (45.2 MB)
+            Uploaded layer_001_f8e3d1c4b2a6...nii.gz (38.7 MB)
+            
+            >>> # Upload with custom suffix
+            >>> client.dssp_upload_ticket(123, 'output.itksnap', '_results')
+            Exported workspace to /tmp/alfabis_xyz/ticket_00000123_results.itksnap
+            ...
+        
+        Note:
+            - All layer images are converted to compressed NIfTI (.nii.gz) format
+            - Layer filenames are scrambled using MD5 hash for anonymization
+            - Temporary files are automatically cleaned up after upload
+            - Large files may take considerable time to upload
+            - Corresponds to C++ WorkspaceAPI::UploadWorkspace()
+        """
+        # Import here to avoid circular dependency
+        from .itksnap_ws import WorkspaceWrapper
+        
+        # Load the workspace
+        ws = WorkspaceWrapper(workspace_file)
+        
+        # Create temporary directory for export
+        # NOTE: C++ uses GetTempDirName() which creates platform-specific temp directory
+        with tempfile.TemporaryDirectory(prefix='alfabis_') as tempdir:
+            # Export the workspace file to the temporary directory
+            # NOTE: Filename format matches C++ sprintf: "ticket_%08d%s.itksnap"
+            ws_filename = f"ticket_{ticket:08d}{wsfile_suffix}.itksnap"
+            ws_filepath = os.path.join(tempdir, ws_filename)
+            
+            # Export workspace with all layers to temp directory
+            # NOTE: scramble_filenames=True uses MD5 hash like C++ GetNativeImageMD5Hash()
+            ws.export_workspace(ws_filepath, scramble_filenames=True)
+            
+            print(f"Exported workspace to {ws_filepath}")
+            
+            # Collect all files in the directory to upload
+            # NOTE: C++ uses Directory::Load() to enumerate files
+            fn_to_upload = []
+            for filename in os.listdir(tempdir):
+                filepath = os.path.join(tempdir, filename)
+                if os.path.isfile(filepath):
+                    fn_to_upload.append(filepath)
+            
+            # Upload each file to the server
+            # NOTE: C++ uses RESTClient::UploadFile with URL format "api/tickets/%d/files/input"
+            # and form fields: myfile (file), filename (string), submit (string)
+            with tqdm(total=len(fn_to_upload), desc="Uploading files") as pbar:
+                for fn in fn_to_upload:
+                    fn_name = os.path.basename(fn)
+                    
+                    # Prepare multipart form data matching C++ curl_formadd structure
+                    data = {
+                        'filename': fn_name,
+                        'submit': 'send'
+                    }
+                    
+                    with open(fn, 'rb') as f:
+                        files = {
+                            'myfile': (fn_name, f, 'application/octet-stream')
+                        }
+                        
+                        # Make the upload request
+                        # NOTE: Using 'api/pro' prefix for provider API instead of 'api'
+                        r = self.post_(f'api/pro/tickets/{ticket}/files/input', 
+                                      files=files, data=data)
+                    
+                    # Report upload statistics
+                    file_size_mb = os.path.getsize(fn) / 1.0e6
+                    pbar.set_postfix_str(f"{fn_name} ({file_size_mb:.1f} MB)")
+                    pbar.update(1)
