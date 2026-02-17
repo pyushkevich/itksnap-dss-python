@@ -5,7 +5,7 @@ import shutil
 import hashlib
 import tempfile
 import httpx
-from typing import List, Set, Optional, Literal
+from typing import List, Set, Literal, Dict
 from copy import deepcopy
 from .registry import Registry
 
@@ -276,6 +276,44 @@ class WorkspaceWrapper:
         key = "Nickname" if self.is_key_valid_mesh_layer(layer_key) else "LayerMetaData.CustomNickName"
         folder.entry(key).set(value)
     
+    def set_labels(self, label_file: str):
+        """
+        Load labels from a file and set them in the workspace.
+        
+        Loads an ITK-SNAP label description file and stores the labels in the
+        main layer's metadata. This replaces any existing label table in the workspace.
+        
+        Args:
+            label_file (str): Path to the ITK-SNAP label description file
+        
+        Raises:
+            ValueError: If the workspace has no main layer
+            FileNotFoundError: If the label file doesn't exist
+            
+        Example:
+            >>> ws = WorkspaceWrapper('workspace.itksnap')
+            >>> ws.set_labels('/path/to/labels.txt')
+            >>> ws.save_workspace('workspace.itksnap')
+        
+        Note:
+            Corresponds to C++ WorkspaceAPI::SetLabels()
+        """
+        # Get the main layer key
+        main_key = self.find_layer_by_role("MainRole", 0)
+        if not main_key:
+            raise ValueError("Cannot set labels: workspace has no main layer")
+        
+        # Get the main layer folder
+        main_folder = self.registry.folder(main_key)
+        
+        # Get the subfolder that corresponds to the labels
+        # NOTE: C++ path is "ProjectMetaData.IRIS.LabelTable"
+        label_reg = main_folder.folder("ProjectMetaData.IRIS.LabelTable")
+        
+        # Load the label descriptions from file and store in registry
+        # NOTE: C++ loads via ColorLabelTable::LoadFromFile() then SaveToRegistry()
+        load_color_label_file_to_registry(label_file, label_reg)
+    
     def get_tags(self, folder: Registry) -> Set[str]:
         """Get a set of tags from a particular folder."""
         tag_set = set()
@@ -458,93 +496,143 @@ class WorkspaceWrapper:
         # We'll manually set the save location and write the registry
         export_registry.entry("SaveLocation").set(wsdir)
         export_registry.write_to_xml_file(ws_file_full)
+
+
+def load_color_label_file_to_registry(label_file: str, registry: Registry) -> None:
+    """
+    Load a color label file and store it in a registry folder.
     
-    def upload_workspace(self, 
-                        server_url: str, 
-                        ticket_id: int, 
-                        wsfile_suffix: str = "",
-                        cookies: Optional[dict] = None):
-        """
-        Upload workspace to DSS server by exporting to temp directory and uploading all files.
-        
-        This method:
-        1. Creates a temporary directory
-        2. Exports the workspace to that directory (with all layer files)
-        3. Uploads all files to the server using multipart form upload
-        4. Cleans up the temporary directory
-        
-        Args:
-            server_url: Base URL of the DSS server (e.g., 'https://dss.itksnap.org')
-            ticket_id: The ticket ID for this upload
-            wsfile_suffix: Optional suffix to add to workspace filename
-            cookies: Optional session cookies dict for authenticated requests
-        
-        Raises:
-            RuntimeError: If upload fails for any file
-        """
-        # Create temporary directory for the export
-        # NOTE: C++ uses GetTempDirName() which creates platform-specific temp directory
-        with tempfile.TemporaryDirectory(prefix='alfabis_') as tempdir:
-            # Export the workspace file to the temporary directory
-            ws_filename = f"ticket_{ticket_id:08d}{wsfile_suffix}.itksnap"
-            ws_filepath = os.path.join(tempdir, ws_filename)
+    This function reads an ITK-SNAP label description file and stores the labels
+    in a Registry object following the format used by ColorLabelTable::SaveToRegistry.
+    
+    The file format is:
+        IDX   -R-  -G-  -B-  -A--  VIS MSH  LABEL
+    Where:
+        IDX: Zero-based index
+        -R-, -G-, -B-: RGB color components (0..255)
+        -A-: Alpha transparency (0.00 .. 1.00)
+        VIS: Visibility flag (0 or 1)
+        MSH: Mesh visibility flag (0 or 1)
+        LABEL: Label description in quotes
+    
+    Args:
+        label_file (str): Path to the color label file
+        registry (Registry): Registry folder where labels will be stored
+    
+    Raises:
+        FileNotFoundError: If the label file doesn't exist
+        ValueError: If there's a syntax error in the file
+    
+    Example:
+        >>> ws = WorkspaceWrapper()
+        >>> label_registry = ws.registry.folder("IRIS.LabelTable")
+        >>> load_color_label_file_to_registry("/path/to/labels.txt", label_registry)
+    
+    Note:
+        Corresponds to C++ ColorLabelTable::LoadFromFile() + SaveToRegistry()
+    """
+    # Dictionary to store parsed labels (maps label index to label data)
+    # NOTE: C++ uses ValidLabelMap (std::map<LabelType, ColorLabel>)
+    label_map: Dict[int, Dict] = {}
+    
+    # Check that the file exists and is readable
+    if not os.path.exists(label_file):
+        raise FileNotFoundError(f"File does not exist: {label_file}")
+    
+    # Read each line of the file separately
+    # NOTE: Corresponds to C++ for loop reading lines with std::getline
+    with open(label_file, 'r') as f:
+        for line_num, line in enumerate(f, start=1):
+            # Strip whitespace
+            line = line.strip()
             
-            # Export workspace with all layers to temp directory
-            self.export_workspace(ws_filepath, scramble_filenames=True)
-            
-            print(f"Exported workspace to {ws_filepath}")
-            
-            # Collect all files in the directory to upload
-            fn_to_upload = []
-            for filename in os.listdir(tempdir):
-                filepath = os.path.join(tempdir, filename)
-                if os.path.isfile(filepath):
-                    fn_to_upload.append(filepath)
-            
-            # Upload each file to the server
-            # NOTE: C++ uses RESTClient::UploadFile which does multipart form upload
-            # The URL format is provided with %d placeholder for ticket_id
-            upload_url_template = server_url.rstrip('/') + '/' + 'api/tickets/%d/files/input'
-            upload_url = upload_url_template % ticket_id
-            
-            # Create httpx client with cookies if provided
-            # NOTE: C++ uses CURL with cookie jar - httpx uses cookie dict
-            client = httpx.Client(cookies=cookies, timeout=300.0) if cookies else httpx.Client(timeout=300.0)
+            # Skip comment lines and blank lines
+            # NOTE: C++ checks line[0] == '#' || line.length() == 0
+            if not line or line.startswith('#'):
+                continue
             
             try:
-                for fn in fn_to_upload:
-                    fn_name = os.path.basename(fn)
-                    
-                    # NOTE: C++ RESTClient::UploadFile uses curl_formadd with these fields:
-                    # - 'myfile': the actual file content
-                    # - 'filename': the filename
-                    # - 'submit': 'send'
-                    # We replicate this structure with httpx
-                    
-                    with open(fn, 'rb') as f:
-                        files = {
-                            'myfile': (fn_name, f, 'application/octet-stream')
-                        }
-                        data = {
-                            'filename': fn_name,
-                            'submit': 'send'
-                        }
-                        
-                        # Make the upload request
-                        response = client.post(upload_url, files=files, data=data)
-                        
-                        # Check response
-                        if response.status_code != 200:
-                            raise RuntimeError(
-                                f"Failed to upload file {fn_name} "
-                                f"(HTTP {response.status_code}): {response.text}"
-                            )
-                        
-                        # Report upload statistics (similar to C++ GetUploadStatistics)
-                        file_size_mb = os.path.getsize(fn) / 1.0e6
-                        print(f"Uploaded {fn_name} ({file_size_mb:.1f} MB)")
+                # Find the quoted label at the end
+                # NOTE: C++ uses iss.ignore() and iss.get() to extract quoted string
+                quote_start = line.find('"')
+                quote_end = line.rfind('"')
                 
-            finally:
-                client.close()
-
+                if quote_start == -1 or quote_end == -1 or quote_start == quote_end:
+                    raise ValueError("Missing or malformed quoted label")
+                
+                # Extract the label text between quotes
+                label_text = line[quote_start + 1:quote_end]
+                
+                # Parse the numeric fields before the label
+                # NOTE: C++ uses iss >> idx >> red >> green >> blue >> alpha >> visible >> mesh
+                fields_text = line[:quote_start].strip()
+                fields = fields_text.split()
+                
+                if len(fields) < 7:
+                    raise ValueError(f"Expected at least 7 fields, got {len(fields)}")
+                
+                # Parse each field
+                idx = int(fields[0])
+                red = int(fields[1])
+                green = int(fields[2])
+                blue = int(fields[3])
+                alpha = float(fields[4])
+                visible = int(fields[5])
+                mesh = int(fields[6])
+                
+                # Validate ranges
+                if not (0 <= red <= 255 and 0 <= green <= 255 and 0 <= blue <= 255):
+                    raise ValueError(f"RGB values must be in range 0-255")
+                if not (0.0 <= alpha <= 1.0):
+                    raise ValueError(f"Alpha must be in range 0.0-1.0")
+                
+                # Store the label data
+                # NOTE: C++ converts alpha from float (0..1) to unsigned char (0..255)
+                # and stores in ColorLabel object
+                if idx > 0:  # Skip label 0 (clear label cannot be modified)
+                    label_map[idx] = {
+                        'alpha': int(255 * alpha),  # Convert to 0-255 range
+                        'color': [red, green, blue],
+                        'visible': visible != 0,
+                        'visible_3d': mesh != 0,
+                        'label': label_text
+                    }
+                    
+            except (ValueError, IndexError) as e:
+                raise ValueError(f"Syntax error on line {line_num}: {e}")
+    
+    # Now write the labels to the registry in the format used by SaveToRegistry
+    # NOTE: Corresponds to C++ ColorLabelTable::SaveToRegistry()
+    
+    # Clear any existing label data in the registry
+    registry.clear()
+    
+    # Write each label to the registry
+    valid_labels = 0
+    for idx in sorted(label_map.keys()):
+        if idx > 0:
+            label_data = label_map[idx]
+            
+            # Create a folder for this label
+            # NOTE: C++ uses registry.Key("Element[%d]", validLabels)
+            folder = registry.folder(f"Element[{valid_labels:d}]")
+            
+            # Write the label properties
+            # NOTE: C++ SaveToRegistry writes:
+            #   folder["Index"] << (int) id;
+            #   folder["Alpha"] << (int) cl.GetAlpha();
+            #   folder["Label"] << cl.GetLabel();
+            #   folder["Color"] << Vector3i(r,g,b);
+            #   folder["Flags"] << Vector2i(visible_3d, visible);
+            folder.entry("Index").set(idx)
+            folder.entry("Alpha").set(label_data['alpha'])
+            folder.entry("Label").set(label_data['label'])
+            folder.entry("Color").set(label_data['color'])
+            folder.entry("Flags").set([label_data['visible_3d'], label_data['visible']])
+            
+            valid_labels += 1
+    
+    # Write the total number of valid labels
+    # NOTE: C++ writes registry["NumberOfElements"] << validLabels;
+    registry.entry("NumberOfElements").set(valid_labels)
 
