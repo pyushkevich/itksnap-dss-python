@@ -628,7 +628,7 @@ def load_color_label_file_to_registry(label_file: str, registry: Registry) -> No
             folder.entry("Alpha").set(label_data['alpha'])
             folder.entry("Label").set(label_data['label'])
             folder.entry("Color").set(label_data['color'])
-            folder.entry("Flags").set([label_data['visible_3d'], label_data['visible']])
+            folder.entry("Flags").set([int(label_data['visible_3d']), int(label_data['visible'])])
             
             valid_labels += 1
     

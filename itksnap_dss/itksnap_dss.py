@@ -345,7 +345,7 @@ class DSSClient:
         self.post_(f'api/pro/tickets/{ticket}/progress', 
                 data={'progress': progress, 'chunk_start':  chunk_start, 'chunk_end': chunk_end})
 
-    def dssp_log(self, ticket: str, category: Literal['info','warning','error'], message: str):
+    def dssp_log(self, ticket: int, category: Literal['info','warning','error'], message: str):
         """
         Add a log message for a ticket.
         
@@ -353,7 +353,7 @@ class DSSClient:
         Use this to provide status updates, warnings, or error information during processing.
         
         Args:
-            ticket (str): Ticket ID
+            ticket (int): Ticket ID
             category (Literal['info','warning','error']): Message severity level:
                 - 'info': Informational message (e.g., "Registration completed successfully")
                 - 'warning': Warning message (e.g., "Low image quality detected")
@@ -376,7 +376,7 @@ class DSSClient:
         """
         self.post_(f'api/pro/tickets/{ticket}/{category}', data={'message': message})
 
-    def dssp_set_status(self, ticket: str, status: Literal['failed','success']):
+    def dssp_set_status(self, ticket: int, status: Literal['failed','success']):
         """
         Mark a ticket as successfully completed or failed.
         
@@ -385,7 +385,7 @@ class DSSClient:
         and the user is notified.
         
         Args:
-            ticket (str): Ticket ID
+            ticket (int): Ticket ID
             status (Literal['failed','success']): Final ticket status:
                 - 'success': Processing completed successfully, results ready
                 - 'failed': Processing failed, ticket closed
@@ -414,7 +414,7 @@ class DSSClient:
         """
         self.post_(f'api/pro/tickets/{ticket}/status', data={'status': status})
 
-    def dssp_attach(self, ticket:str, desc: str, filename: str, mime_type:str = ''):
+    def dssp_attach(self, ticket: int, desc: str, filename: str, mime_type: str = ''):
         """
         Attach a file to a ticket's log.
         
@@ -423,7 +423,7 @@ class DSSClient:
         attachments from the ITK-SNAP interface.
         
         Args:
-            ticket (str): Ticket ID
+            ticket (int): Ticket ID
             desc (str): Description of the attachment (shown to user)
             filename (str): Path to the file to attach
             mime_type (str, optional): MIME type of the file (e.g., 'text/plain', 'image/png').
@@ -462,7 +462,7 @@ class DSSClient:
                            files={"myfile": f}, data=d)
             return r
     
-    def dssp_upload_ticket(self, ticket: str, workspace_file: str, wsfile_suffix: str = ""):
+    def dssp_upload_ticket(self, ticket: int, workspace_file: str, wsfile_suffix: str = ""):
         """
         Upload a workspace file and all its layer images to the server for a ticket.
         
@@ -471,7 +471,7 @@ class DSSClient:
         server's input area for the specified ticket.
         
         Args:
-            ticket (str): Ticket ID to upload files for
+            ticket (int): Ticket ID to upload files for
             workspace_file (str): Path to the ITK-SNAP workspace (.itksnap) file
             wsfile_suffix (str, optional): Optional suffix to add to workspace filename
                 on the server (e.g., "_result" -> "ticket_00000123_result.itksnap")
