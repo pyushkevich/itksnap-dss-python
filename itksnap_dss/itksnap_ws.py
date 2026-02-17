@@ -5,7 +5,7 @@ import shutil
 import hashlib
 import tempfile
 import httpx
-from typing import List, Set, Optional
+from typing import List, Set, Optional, Literal
 from copy import deepcopy
 from .registry import Registry
 
@@ -78,7 +78,7 @@ class WorkspaceWrapper:
         
         return ""
         
-    def add_layer(self, role: str, filename: str) -> str:
+    def add_layer(self, role: Literal["MainRole", "AnatomicalRole", "OverlayRole", "SegmentationRole"], filename: str) -> str:
         """Add layer to workspace. Returns layer key."""
         # Validity checks
         if role == "MainRole" and self.find_layer_by_role(role, 0):

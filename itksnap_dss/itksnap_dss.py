@@ -462,7 +462,7 @@ class DSSClient:
                            files={"myfile": f}, data=d)
             return r
     
-    def dssp_upload_ticket(self, ticket: int, workspace_file: str, wsfile_suffix: str = ""):
+    def dssp_upload_ticket(self, ticket: str, workspace_file: str, wsfile_suffix: str = ""):
         """
         Upload a workspace file and all its layer images to the server for a ticket.
         
@@ -471,7 +471,7 @@ class DSSClient:
         server's input area for the specified ticket.
         
         Args:
-            ticket (int): Ticket ID to upload files for
+            ticket (str): Ticket ID to upload files for
             workspace_file (str): Path to the ITK-SNAP workspace (.itksnap) file
             wsfile_suffix (str, optional): Optional suffix to add to workspace filename
                 on the server (e.g., "_result" -> "ticket_00000123_result.itksnap")
@@ -486,14 +486,14 @@ class DSSClient:
         
         Example:
             >>> # Upload results workspace after processing
-            >>> client.dssp_upload_ticket(123, '/tmp/result_workspace.itksnap')
+            >>> client.dssp_upload_ticket('123', '/tmp/result_workspace.itksnap')
             Exported workspace to /tmp/alfabis_xyz/ticket_00000123.itksnap
             Uploaded ticket_00000123.itksnap (0.1 MB)
             Uploaded layer_000_a3b5c7d9e1f2...nii.gz (45.2 MB)
             Uploaded layer_001_f8e3d1c4b2a6...nii.gz (38.7 MB)
             
             >>> # Upload with custom suffix
-            >>> client.dssp_upload_ticket(123, 'output.itksnap', '_results')
+            >>> client.dssp_upload_ticket('123', 'output.itksnap', '_results')
             Exported workspace to /tmp/alfabis_xyz/ticket_00000123_results.itksnap
             ...
         
@@ -515,7 +515,7 @@ class DSSClient:
         with tempfile.TemporaryDirectory(prefix='alfabis_') as tempdir:
             # Export the workspace file to the temporary directory
             # NOTE: Filename format matches C++ sprintf: "ticket_%08d%s.itksnap"
-            ws_filename = f"ticket_{ticket:08d}{wsfile_suffix}.itksnap"
+            ws_filename = f"ticket_{int(ticket):08d}{wsfile_suffix}.itksnap"
             ws_filepath = os.path.join(tempdir, ws_filename)
             
             # Export workspace with all layers to temp directory
@@ -533,7 +533,7 @@ class DSSClient:
                     fn_to_upload.append(filepath)
             
             # Upload each file to the server
-            # NOTE: C++ uses RESTClient::UploadFile with URL format "api/tickets/%d/files/input"
+            # NOTE: C++ uses RESTClient::UploadFile with URL format "api/tickets/%d/files/result"
             # and form fields: myfile (file), filename (string), submit (string)
             with tqdm(total=len(fn_to_upload), desc="Uploading files") as pbar:
                 for fn in fn_to_upload:
@@ -552,7 +552,7 @@ class DSSClient:
                         
                         # Make the upload request
                         # NOTE: Using 'api/pro' prefix for provider API instead of 'api'
-                        r = self.post_(f'api/pro/tickets/{ticket}/files/input', 
+                        r = self.post_(f'api/pro/tickets/{ticket}/files/results', 
                                       files=files, data=data)
                     
                     # Report upload statistics
