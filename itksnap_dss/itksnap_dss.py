@@ -60,10 +60,12 @@ class DSSClient:
         self.server = server
         self.key = f'itksnap_dss_python:{server}'
         self.verify = verify
+        self.timeout = httpx.Timeout(connect=10.0, read=300.0, write=300.0, pool=10.0)
+        self.max_attempts = 5
 
         sess_id = keyring.get_password("system", self.key)
         cookies = {'webpy_session_id': sess_id} if sess_id is not None else None
-        self.cli = httpx.Client(verify=False, cookies=cookies)
+        self.cli = httpx.Client(verify=False, cookies=cookies, timeout=self.timeout)
 
     def get_(self, loc, **kwargs):
         r = self.cli.get(f'{self.server}/{loc}', **kwargs)
@@ -71,9 +73,18 @@ class DSSClient:
         return r
 
     def post_(self, loc, **kwargs):
-        r = self.cli.post(f'{self.server}/{loc}', **kwargs)
-        r.raise_for_status()
-        return r
+        last_exc = None
+        for attempt in range(self.max_attempts):
+            try:
+                r = self.cli.post(f'{self.server}/{loc}', **kwargs)
+                r.raise_for_status()
+                return r
+            except (httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ConnectError) as e:
+                last_exc = e
+                wait = min(2 ** attempt, 30)
+                print(f"upload attempt {attempt+1} failed ({e!r}), retrying in {wait}s")
+                time.sleep(wait)
+        raise last_exc
 
     def csv_(self, r, names):
         return pd.read_csv(StringIO(r.text), header=None, names=names)
@@ -113,7 +124,7 @@ class DSSClient:
         sess_id = r.cookies.get('webpy_session_id')
         if sess_id is not None:
             keyring.set_password("system", self.key, sess_id)
-            self.cli = httpx.Client(verify=False, cookies=r.cookies)
+            self.cli = httpx.Client(verify=False, cookies=r.cookies, timeout=self.timeout)
             print(f'Login successful, session id stored in keychain "system", key "{self.key}"')
         return r
     
@@ -230,6 +241,9 @@ class DSSClient:
         Note:
             Corresponds to command-line: itksnap-wt -dssp-services-claim <service_hash> <provider> <instance_id> <timeout>
         """
+        if timeout == 0:
+            return self.dssp_claim_ticket(services, provider, provider_code)
+        
         t_start = time.time()
         t_last_upd = t_start
         with tqdm(total=timeout) as pbar:
