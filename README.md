@@ -1,10 +1,15 @@
-# Alfabis Python Client for ITK-SNAP DSS
+# ITK-SNAP DSS Python Tools
 
-A Python client library for interacting with the ITK-SNAP Distributed Segmentation Service (DSS) middleware as a service provider.
+Python tools for ITK-SNAP Distributed Segmentation Service (DSS), including a client for service providers and workspace manipulation utilities.
 
 ## Overview
 
-The ITK-SNAP DSS (Distributed Segmentation Services) is an architecture that enables medical image segmentation algorithms to be deployed as web services. This Python client allows algorithm developers to create service providers that claim processing tickets, download input data, perform segmentation, and upload results back to the DSS middleware server.
+This package provides two main components:
+
+1. **DSSClient** - HTTP client for interacting with DSS middleware as a service provider
+2. **WorkspaceWrapper** - Tools for programmatic manipulation of ITK-SNAP workspace files
+
+The ITK-SNAP DSS enables medical image segmentation algorithms to be deployed as web services. Service providers claim tickets, download data, process it, and upload results back to the middleware.
 
 For comprehensive DSS documentation, visit: https://alfabis-server.readthedocs.io/en/latest/
 
@@ -12,9 +17,9 @@ For comprehensive DSS documentation, visit: https://alfabis-server.readthedocs.i
 
 The DSS system consists of three layers:
 
-- **Client**: GUI (ITK-SNAP) or command-line tools (itksnap-wt) that submit processing requests
-- **Middleware**: Web application (e.g., https://dss.itksnap.org) that orchestrates communication
-- **Service Providers**: Algorithm implementations that process tickets (this library helps you build these)
+- **Client**: ITK-SNAP GUI or `itksnap-wt` command-line tools
+- **Middleware**: Web application that orchestrates communication (e.g., https://dss.itksnap.org)
+- **Service Providers**: Algorithm implementations that process tickets (use this library)
 
 ## Installation
 
@@ -24,236 +29,195 @@ pip install itksnap-dss
 
 ## Quick Start
 
-### 1. Connect and Authenticate
+### DSSClient - Service Provider Operations
 
 ```python
 from itksnap_dss import DSSClient
 
-# Connect to DSS middleware server
+# Connect and authenticate
 client = DSSClient('https://dss.itksnap.org')
-
-# Authenticate (you'll be prompted for a token from the server)
 client.login()
-```
 
-### 2. List Available Services
-
-```python
-# See which services you're registered to provide
+# List services and claim a ticket
 services = client.dssp_list_services()
-print(services)
-#              service version                                      hash provider
-# 0        MRI-NeckCut   1.0.0  e0a316038e9cbe6a000e07c82758532a8863f51f     test
-# 1  RegistrationExample   0.1.0  b7392368dc5dcec910bb8b87006ae38fd1f2cb32  testlab
-```
-
-### 3. Claim and Process a Ticket
-
-```python
-# Extract service hash from the services list
 service_hash = services['hash'].iloc[0]
 
-# Claim a ticket for this service
 ticket_df = client.dssp_claim_ticket(
     services=[service_hash],
-    provider='testlab',
+    provider='my_provider',
     provider_code='instance_1'
 )
 
 if ticket_df is not None:
     ticket_id = ticket_df['ticket'].iloc[0]
-    print(f"Claimed ticket {ticket_id}")
     
     # Download input files
     client.dssp_download_ticket(ticket_id, f'/tmp/ticket_{ticket_id}')
     
-    # Process the data (your algorithm here)
-    # ...
-    
-    # Update progress and log messages
+    # Process data and update progress
     client.dssp_log(ticket_id, 'info', 'Processing started')
-    client.dssp_set_progress(ticket_id, 0.5)  # 50% complete
+    client.dssp_set_progress(ticket_id, 0.5)
     
-    # Attach intermediate results
-    client.dssp_attach(ticket_id, 'Quality metrics', 'metrics.txt', 'text/plain')
-    client.dssp_log(ticket_id, 'info', 'Quality check passed')
+    # Upload results
+    client.dssp_upload_ticket(ticket_id, 'result_workspace.itksnap')
     
-    # Mark as complete
+    # Mark complete
     client.dssp_set_progress(ticket_id, 1.0)
     client.dssp_set_status(ticket_id, 'success')
-else:
-    print("No tickets available")
 ```
 
-### 4. Wait for Tickets (Daemon Mode)
+### WorkspaceWrapper - Workspace Manipulation
 
 ```python
-# Continuously wait for tickets with timeout
-while True:
-    ticket_df = client.dssp_wait_for_ticket(
-        services=[service_hash],
-        provider='testlab',
-        provider_code='instance_1',
-        timeout=300,  # Wait up to 5 minutes
-        interval=15   # Check every 15 seconds
-    )
-    
-    if ticket_df is not None:
-        # Process ticket...
-        pass
+from itksnap_dss import WorkspaceWrapper
+
+# Load and modify workspace
+ws = WorkspaceWrapper('input.itksnap')
+
+# Add/modify layers
+ws.add_layer('OverlayRole', 'segmentation.nii.gz')
+ws.set_layer_nickname('Layers.Layer[001]', 'My Segmentation')
+ws.add_tag_to_layer('Layers.Layer[001]', 'result')
+
+# Set labels
+ws.set_labels('labels.txt')
+
+# Export workspace with scrambled filenames
+ws.export_workspace('output.itksnap', scramble_filenames=True)
+
+# Save workspace
+ws.save_workspace('modified.itksnap')
 ```
 
 ## Service Provider Workflow
 
-A typical service provider follows this workflow:
-
-1. **List Services** - Check which services you're registered for
-2. **Claim Ticket** - Get the next available processing job
-3. **Download Files** - Retrieve input data for the ticket
-4. **Process Data** - Run your segmentation algorithm
-5. **Update Progress** - Keep users informed during processing
-6. **Log Messages** - Provide status updates, warnings, or errors
-7. **Attach Files** - Upload intermediate results or quality metrics
-8. **Upload Results** - Send processed data back to server (Note: upload method not yet implemented in this client)
-9. **Mark Status** - Set ticket as 'success' or 'failed'
+1. **Authenticate** - Login to middleware server
+2. **List Services** - Check registered services  
+3. **Claim Ticket** - Get next processing job
+4. **Download Files** - Retrieve input workspace and images
+5. **Process Data** - Run algorithm, modify workspace
+6. **Update Progress** - Keep users informed
+7. **Upload Results** - Send result workspace back
+8. **Mark Status** - Set as 'success' or 'failed'
 
 ## API Reference
 
-### Connection & Authentication
+### DSSClient - Provider Operations
 
-#### `DSSClient(server, verify=True)`
-Initialize a connection to the DSS middleware server.
+#### Connection
+- `DSSClient(server, verify=True)` - Initialize connection
+- `login(token=None)` - Authenticate with token
 
-**Parameters:**
-- `server` (str): Server URL (e.g., 'https://dss.itksnap.org')
-- `verify` (bool): Verify SSL certificates (default: True)
+#### Service & Ticket Management
+- `dssp_list_services()` - List available services
+- `dssp_claim_ticket(services, provider, provider_code)` - Claim next ticket
+- `dssp_wait_for_ticket(..., timeout, interval)` - Wait for ticket with timeout
+- `dssp_download_ticket(ticket, outdir)` - Download input files
 
-#### `login(token=None)`
-Authenticate with the server using a 40-character token.
+#### Progress & Logging
+- `dssp_set_progress(ticket, progress, chunk_start=0.0, chunk_end=1.0)` - Update progress
+- `dssp_log(ticket, category, message)` - Log message (info/warning/error)
+- `dssp_attach(ticket, desc, filename, mime_type='')` - Attach file to next log
 
-**Equivalent CLI:** `itksnap-wt -dss-auth <server>`
+#### Results & Status
+- `dssp_upload_ticket(ticket, workspace_file, wsfile_suffix='')` - Upload result workspace
+- `dssp_set_status(ticket, status)` - Mark as 'success' or 'failed'
 
-### Service Management
+### WorkspaceWrapper - Workspace Manipulation
 
-#### `dssp_list_services()`
-List all services you're registered as a provider for.
+#### File Operations
+- `WorkspaceWrapper(workspace_file=None)` - Create wrapper
+- `load_workspace(workspace_file)` - Load from file
+- `save_workspace(workspace_file)` - Save to file
+- `export_workspace(ws_file, scramble_filenames=False)` - Export with NIfTI conversion
 
-**Returns:** DataFrame with columns: service, version, hash, provider
+#### Layer Management
+- `get_number_of_layers()` - Count layers
+- `find_layer_by_role(role, pos_in_role=0)` - Find layer by role
+- `add_layer(role, filename)` - Add new layer
+- `set_layer(role, filename)` - Set/replace layer
+- `set_layer_nickname(layer_key, value)` - Set nickname
+- `get_layer_actual_path(folder)` - Resolve layer path (handles moved workspaces)
 
-**Equivalent CLI:** `itksnap-wt -dssp-services-list`
+#### Label Management
+- `set_labels(label_file)` - Load and set label descriptions
+- `load_color_label_file_to_registry(label_file, registry)` - Load labels to registry
 
-### Ticket Management
+#### Tag Management
+- `get_tags(folder)` - Get tags from folder
+- `put_tags(folder, tags)` - Set tags in folder
+- `add_tag(folder, tag)` - Add single tag
+- `remove_tag(folder, tag)` - Remove single tag
+- `add_tag_to_layer(layer_key, tag)` - Add tag to layer
+- `remove_tag_from_layer(layer_key, tag)` - Remove tag from layer
 
-#### `dssp_claim_ticket(services, provider, provider_code)`
-Claim the next available ticket for one or more services.
+### Registry - Low-Level Configuration
 
-**Parameters:**
-- `services` (List[str]): Service git hashes
-- `provider` (str): Provider identifier
-- `provider_code` (str): Unique instance identifier
+The `Registry` class provides hierarchical key-value storage for workspace metadata:
 
-**Returns:** DataFrame with ticket info, or None if no tickets available
+- `entry(key)` - Access registry entry (use `.get()` / `.set()`)
+- `folder(key)` - Access registry folder
+- `has_entry(key)` / `has_folder(key)` - Check existence
+- `read_from_xml_file(filename)` / `write_to_xml_file(filename)` - File I/O
 
-**Equivalent CLI:** `itksnap-wt -dssp-services-claim <service_hash_list> <provider> <instance_id>`
-
-#### `dssp_wait_for_ticket(services, provider, provider_code, timeout=300, interval=15)`
-Wait for a ticket to become available.
-
-**Equivalent CLI:** `itksnap-wt -dssp-services-claim <service_hash_list> <provider> <instance_id> <timeout>`
-
-#### `dssp_download_ticket(ticket, outdir)`
-Download all input files for a ticket to a directory.
-
-**Equivalent CLI:** `itksnap-wt -dssp-tickets-download <id> <dir>`
-
-### Progress & Logging
-
-#### `dssp_set_progress(ticket, progress, chunk_start=0.0, chunk_end=1.0)`
-Update processing progress (values in range [0, 1]).
-
-**Equivalent CLI:** `itksnap-wt -dssp-tickets-set-progress <id> <start> <end> <value>`
-
-#### `dssp_log(ticket, category, message)`
-Add a log message (category: 'info', 'warning', or 'error').
-
-**Equivalent CLI:** `itksnap-wt -dssp-tickets-log <id> <type> <msg>`
-
-#### `dssp_attach(ticket, desc, filename, mime_type='')`
-Attach a file to be linked with the next log message.
-
-**Equivalent CLI:** `itksnap-wt -dssp-tickets-attach <id> <desc> <file> [mimetype]`
-
-### Status Control
-
-#### `dssp_set_status(ticket, status)`
-Mark ticket as 'success' or 'failed'.
-
-**Equivalent CLI:** 
-- `itksnap-wt -dssp-tickets-success <id>`
-- `itksnap-wt -dssp-tickets-fail <id> <msg>`
-
-## Example: Complete Service Provider Script
+## Example: Complete Service Provider
 
 ```python
 #!/usr/bin/env python3
-"""
-Example DSS service provider daemon that continuously processes tickets.
-"""
-
-from itksnap_dss import DSSClient
-import time
+from itksnap_dss import DSSClient, WorkspaceWrapper
+import os
 
 def process_ticket(client, ticket_id, workdir):
     """Process a single ticket."""
     try:
-        # Download input data
+        # Download input
         client.dssp_log(ticket_id, 'info', 'Downloading input files')
         client.dssp_download_ticket(ticket_id, workdir)
         
-        # Your processing algorithm here
-        client.dssp_log(ticket_id, 'info', 'Starting processing')
-        client.dssp_set_progress(ticket_id, 0.2)
+        # Find workspace file
+        ws_file = next(f for f in os.listdir(workdir) if f.endswith('.itksnap'))
+        ws_path = os.path.join(workdir, ws_file)
         
-        # ... run your algorithm ...
-        time.sleep(5)  # Simulate processing
+        # Load workspace and process
+        ws = WorkspaceWrapper(ws_path)
+        client.dssp_log(ticket_id, 'info', 'Processing started')
+        client.dssp_set_progress(ticket_id, 0.3)
+        
+        # Your algorithm here - modify workspace, add layers, etc.
+        # ws.add_layer('OverlayRole', 'result.nii.gz')
+        # ws.set_labels('labels.txt')
         
         client.dssp_set_progress(ticket_id, 0.8)
-        client.dssp_log(ticket_id, 'info', 'Processing complete')
         
-        # Upload results (not yet implemented in this client)
-        # client.dssp_upload_ticket(ticket_id, result_workspace)
+        # Save and upload results
+        result_path = os.path.join(workdir, 'result.itksnap')
+        ws.save_workspace(result_path)
         
-        # Mark as successful
+        client.dssp_log(ticket_id, 'info', 'Uploading results')
+        client.dssp_upload_ticket(ticket_id, result_path)
+        
+        # Mark complete
         client.dssp_set_progress(ticket_id, 1.0)
         client.dssp_set_status(ticket_id, 'success')
         
     except Exception as e:
-        # Handle errors
-        client.dssp_log(ticket_id, 'error', f'Processing failed: {str(e)}')
+        client.dssp_log(ticket_id, 'error', f'Failed: {str(e)}')
         client.dssp_set_status(ticket_id, 'failed')
 
 def main():
-    # Initialize client
     client = DSSClient('http://localhost:8080')
     client.login()
     
-    # Get service hash
     services = client.dssp_list_services()
     service_hash = services['hash'].iloc[0]
     
-    # Main processing loop
-    print(f"Starting service provider for {services['service'].iloc[0]}")
+    print(f"Provider for: {services['service'].iloc[0]}")
     while True:
-        ticket_df = client.dssp_wait_for_ticket(
-            services=[service_hash],
-            provider='testlab',
-            provider_code='instance_1',
-            timeout=60
+        ticket = client.dssp_wait_for_ticket(
+            [service_hash], 'my_provider', 'instance_1', timeout=60
         )
-        
-        if ticket_df is not None:
-            ticket_id = ticket_df['ticket'].iloc[0]
-            print(f"Processing ticket {ticket_id}")
+        if ticket is not None:
+            ticket_id = ticket['ticket'].iloc[0]
             process_ticket(client, ticket_id, f'/tmp/ticket_{ticket_id}')
 
 if __name__ == '__main__':
@@ -262,50 +226,24 @@ if __name__ == '__main__':
 
 ## Command-Line Equivalents
 
-This Python client provides equivalents to the `itksnap-wt` command-line tool's provider commands:
+Python methods corresponding to `itksnap-wt` provider commands:
 
 | Command-Line | Python Method |
 |-------------|---------------|
 | `-dssp-services-list` | `dssp_list_services()` |
-| `-dssp-services-claim <hash> <provider> <instance>` | `dssp_claim_ticket(services, provider, provider_code)` |
-| `-dssp-services-claim ... <timeout>` | `dssp_wait_for_ticket(..., timeout)` |
-| `-dssp-tickets-download <id> <dir>` | `dssp_download_ticket(ticket, outdir)` |
-| `-dssp-tickets-set-progress <id> <s> <e> <v>` | `dssp_set_progress(ticket, progress, chunk_start, chunk_end)` |
-| `-dssp-tickets-log <id> <type> <msg>` | `dssp_log(ticket, category, message)` |
-| `-dssp-tickets-attach <id> <desc> <file>` | `dssp_attach(ticket, desc, filename, mime_type)` |
-| `-dssp-tickets-success <id>` | `dssp_set_status(ticket, 'success')` |
-| `-dssp-tickets-fail <id> <msg>` | `dssp_set_status(ticket, 'failed')` + `dssp_log(..., 'error', msg)` |
-| `-dssp-tickets-upload <id>` | *(Not yet implemented)* |
-| `-dssp-tickets-status <id>` | *(Not yet implemented)* |
-
-## Development Status
-
-### Implemented Features
-- ✅ Authentication and session management
-- ✅ Service listing
-- ✅ Ticket claiming (single and multi-service)
-- ✅ Waiting for tickets with timeout
-- ✅ File listing and downloading
-- ✅ Progress updates
-- ✅ Logging (info/warning/error)
-- ✅ File attachments
-- ✅ Status updates (success/failed)
-
-### Not Yet Implemented
-- ❌ Ticket result upload (`-dssp-tickets-upload`)
-- ❌ Ticket status check (`-dssp-tickets-status`)
+| `-dssp-services-claim` | `dssp_claim_ticket()` |
+| `-dssp-tickets-download` | `dssp_download_ticket()` |
+| `-dssp-tickets-set-progress` | `dssp_set_progress()` |
+| `-dssp-tickets-log` | `dssp_log()` |
+| `-dssp-tickets-attach` | `dssp_attach()` |
+| `-dssp-tickets-upload` | `dssp_upload_ticket()` |
+| `-dssp-tickets-success/-fail` | `dssp_set_status()` |
 
 ## License
 
 See LICENSE file for details.
 
-## Contributing
-
-Contributions are welcome! Please submit issues and pull requests on the project repository.
-
 ## References
 
 - [DSS Documentation](https://alfabis-server.readthedocs.io/en/latest/)
-- [DSS Service Developer's Guide](https://alfabis-server.readthedocs.io/en/latest/service_quick_start.html)
-- [DSS REST API Reference](https://alfabis-server.readthedocs.io/en/latest/reference.html)
 - [ITK-SNAP](http://www.itksnap.org)
