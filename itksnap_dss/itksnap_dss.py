@@ -200,7 +200,43 @@ class DSSClient:
         """
         r = self.post_('api/pro/services/claims', data={'services': ','.join(services), 'provider':provider, 'code':provider_code})
         return self.csv_(r, names=['ticket','service','status']) if r.text != 'None' else None
-    
+
+    def dssp_available_services(self, services: List[str]):
+        """
+        List the services that have tickets waiting to be claimed, without claiming any.
+
+        Use this when the provider must first acquire a resource (e.g., a GPU) before it can
+        process a ticket: check which services have work, allocate the resource, and only
+        then call dssp_claim_ticket. The tickets stay in the queue in the meantime, so
+        another provider may claim them first; dssp_claim_ticket can still return None.
+
+        Args:
+            services (List[str]): List of service git hashes (40-character commit hashes)
+                to check. You must be a provider for each of them.
+
+        Returns:
+            pandas.DataFrame or None: One row per service that has tickets ready to claim,
+                in the order in which dssp_claim_ticket would serve them (the first row is
+                the service a claim over the same list would pick from), with columns:
+                - service (str): Service hash
+                - service_name (str): Service name
+                - ready_tickets (int): Number of tickets ready to be claimed
+            Returns None if none of the services have tickets waiting.
+
+        Example:
+            >>> avail = client.dssp_available_services(['hash1', 'hash2'])
+            >>> if avail is not None:
+            ...     allocate_gpu()
+            ...     ticket = client.dssp_claim_ticket(['hash1', 'hash2'], 'testlab', 'instance_1')
+            ...     if ticket is None:
+            ...         release_gpu()  # Another provider got there first
+
+        Note:
+            Requires a DSS server (itksnap-dss-server) version 0.2.0 or later.
+        """
+        r = self.post_('api/pro/services/available', data={'services': ','.join(services)})
+        return self.csv_(r, names=['service','service_name','ready_tickets']) if r.text.strip() else None
+
     def dssp_wait_for_ticket(self, services: List[str], provider: str, provider_code: str, timeout:int=300, interval:int=15):
         """
         Wait for a ticket to become available, with timeout.
