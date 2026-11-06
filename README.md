@@ -111,8 +111,9 @@ ws.save_workspace('modified.itksnap')
 #### Service & Ticket Management
 - `dssp_list_services()` - List available services
 - `dssp_available_services(services)` - List services with tickets ready to claim, in priority order, without claiming
-- `dssp_claim_ticket(services, provider, provider_code)` - Claim next ticket
-- `dssp_wait_for_ticket(..., timeout, interval)` - Wait for ticket with timeout
+- `dssp_claim_ticket(services, provider, provider_code, claim_timeout=None)` - Claim next ticket (temporarily, for `claim_timeout` seconds, if given)
+- `dssp_renew_claim(ticket, provider, provider_code, claim_timeout=None)` - Claim a temporarily claimed (or back-in-queue) ticket for good when a queued job starts; returns False if the ticket is not available to this instance
+- `dssp_wait_for_ticket(..., timeout, interval, claim_timeout=None)` - Wait for ticket with timeout
 - `dssp_download_ticket(ticket, outdir)` - Download input files
 
 #### Progress & Logging

@@ -32,7 +32,7 @@ import time
 import tempfile
 from tqdm.auto import tqdm
 from io import StringIO
-from typing import List, Literal
+from typing import List, Literal, Optional
 import os
 
 class DSSClient:
@@ -170,7 +170,8 @@ class DSSClient:
         r = self.get_('api/pro/services')
         return self.csv_(r, names=['service','version','hash','provider'])
 
-    def dssp_claim_ticket(self, services: List[str], provider: str, provider_code: str):
+    def dssp_claim_ticket(self, services: List[str], provider: str, provider_code: str,
+                          claim_timeout: Optional[int] = None):
         """
         Claim the next available ticket for one or more services.
         
@@ -185,6 +186,11 @@ class DSSClient:
             provider (str): Provider identifier code (e.g., 'testlab')
             provider_code (str): Unique instance identifier within the provider (e.g., 'instance_1').
                 Used when running multiple parallel provider instances.
+            claim_timeout (int, optional): If given, claim the ticket only temporarily, for
+                this many seconds. Unless the claim is renewed with dssp_renew_claim before
+                it expires, the ticket returns to the queue for other providers to claim.
+                Useful when handing the ticket to a batch queue (e.g., SLURM) that may not
+                start the job right away. Defaults to None (permanent claim).
         
         Returns:
             pandas.DataFrame or None: DataFrame with columns if a ticket is available:
@@ -205,12 +211,68 @@ class DSSClient:
             >>> ticket = client.dssp_claim_ticket(['hash1', 'hash2'], 'testlab', 'instance_1')
             >>> if ticket is not None:
             ...     service_hash = ticket['service'].iloc[0]  # Which service this ticket is for
+
+            >>> # Claim for 60 seconds while submitting a SLURM job; the job itself
+            >>> # calls dssp_renew_claim to make the claim permanent when it starts
+            >>> ticket = client.dssp_claim_ticket(['hash1'], 'testlab', 'instance_1', claim_timeout=60)
         
         Note:
             Corresponds to command-line: itksnap-wt -dssp-services-claim <service_hash_list> <provider> <instance_id>
+            claim_timeout requires a DSS server (itksnap-dss-server) with temporary claim support.
         """
-        r = self.post_('api/pro/services/claims', data={'services': ','.join(services), 'provider':provider, 'code':provider_code})
+        data = {'services': ','.join(services), 'provider':provider, 'code':provider_code}
+        if claim_timeout is not None:
+            data['timeout'] = int(claim_timeout)
+        r = self.post_('api/pro/services/claims', data=data)
         return self.csv_(r, names=['ticket','service','status']) if r.text != 'None' else None
+
+    def dssp_renew_claim(self, ticket: int, provider: str, provider_code: str,
+                         claim_timeout: Optional[int] = None) -> bool:
+        """
+        Claim a specific ticket for good, typically when a job queued under a temporary
+        claim (see dssp_claim_ticket with claim_timeout) starts working on it.
+
+        This should be the first call made by such a job. It succeeds if:
+          - this provider instance (same provider and provider_code) holds a live
+            temporary claim on the ticket, or
+          - the temporary claim has expired but the ticket is back in the queue and
+            nobody else has claimed it.
+        It fails if the ticket has already been claimed for good, even by this provider
+        instance (so if the same ticket is queued twice, only one job works on it), if
+        another provider instance holds a temporary claim on it, or if the ticket is
+        finished. If it fails, the job must not process the ticket.
+
+        Args:
+            ticket (int): Ticket ID
+            provider (str): Provider identifier code (e.g., 'testlab'); must match the
+                temporary claim
+            provider_code (str): Unique instance identifier within the provider; must
+                match the temporary claim
+            claim_timeout (int, optional): If given, the claim stays temporary and expires
+                this many seconds from now. Defaults to None (claim for good).
+
+        Returns:
+            bool: True if the ticket is now claimed by this provider instance, False if it
+                is not available to it.
+
+        Example:
+            >>> # At the start of the SLURM job
+            >>> if not client.dssp_renew_claim(ticket_id, 'testlab', 'instance_1'):
+            ...     sys.exit(0)  # Someone else has the ticket; nothing to do
+
+        Note:
+            Requires a DSS server (itksnap-dss-server) with temporary claim support.
+        """
+        data = {'provider': provider, 'code': provider_code}
+        if claim_timeout is not None:
+            data['timeout'] = int(claim_timeout)
+        try:
+            self.post_(f'api/pro/tickets/{ticket}/claim', data=data)
+            return True
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 400:
+                return False
+            raise
 
     def dssp_available_services(self, services: List[str]):
         """
@@ -248,7 +310,8 @@ class DSSClient:
         r = self.post_('api/pro/services/available', data={'services': ','.join(services)})
         return self.csv_(r, names=['service','service_name','ready_tickets']) if r.text.strip() else None
 
-    def dssp_wait_for_ticket(self, services: List[str], provider: str, provider_code: str, timeout:int=300, interval:int=15):
+    def dssp_wait_for_ticket(self, services: List[str], provider: str, provider_code: str, timeout:int=300, interval:int=15,
+                             claim_timeout: Optional[int] = None):
         """
         Wait for a ticket to become available, with timeout.
         
@@ -261,6 +324,8 @@ class DSSClient:
             provider_code (str): Unique instance identifier
             timeout (int, optional): Maximum time to wait in seconds. Defaults to 300 (5 minutes).
             interval (int, optional): Time between claim attempts in seconds. Defaults to 15.
+            claim_timeout (int, optional): If given, the ticket is claimed only temporarily,
+                for this many seconds (see dssp_claim_ticket). Defaults to None (permanent claim).
         
         Returns:
             pandas.DataFrame or None: Ticket information if successfully claimed, None if timeout reached
@@ -278,13 +343,13 @@ class DSSClient:
             Corresponds to command-line: itksnap-wt -dssp-services-claim <service_hash> <provider> <instance_id> <timeout>
         """
         if timeout == 0:
-            return self.dssp_claim_ticket(services, provider, provider_code)
+            return self.dssp_claim_ticket(services, provider, provider_code, claim_timeout)
         
         t_start = time.time()
         t_last_upd = t_start
         with tqdm(total=timeout) as pbar:
             while True:
-                df = self.dssp_claim_ticket(services, provider, provider_code)
+                df = self.dssp_claim_ticket(services, provider, provider_code, claim_timeout)
                 if df is not None:
                     return df
                 if time.time() - t_start >= timeout:
